@@ -1,0 +1,408 @@
+---
+title: "Seminar"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    latex_engine: xelatex
+date: "null"
+---
+
+
+# Giới thiệu dữ liệu
+
+Dữ liệu "Students Performance in Exams" được lấy từ [roycekimmons.com](http://roycekimmons.com/tools/generated_data/exams) với 1000 quan trắc và 8 biến như sau:
+
+1. **gender:** Giới tính.
+2. **race/ethnicity:** Chủng tộc / Dân tộc.
+3. **parental level of education:** Trình độ học vấn của cha mẹ.
+4. **lunch:** Bữa ăn trưa.
+5. **test preparation course:** Khóa luyện thi.
+6. **math score:** Điểm toán.
+7. **reading score:** Điểm đọc.
+8. **writing score:** Điểm viết.
+
+**Thư viện**
+```{r}
+library(ggpubr)
+library(ggplot2)
+library(MASS)
+library(nortest)
+library(bayestestR)
+library(plyr)
+library("numDeriv")
+```
+
+**Đọc dữ liệu, kiểm tra dữ liệu khuyết và trực quan hóa dữ liệu**
+```{r}
+data <- read.csv("exams.csv")
+data <- rename(data, c("math.score" = "Math", "reading.score" = "Read", "writing.score" = "Writing"))
+str(data)
+f<-function(data){any(is.na(data))}
+apply(data, 2, f)
+```
+
+```{r}
+for (i in 1:5){
+  print(table(data[i]))
+}           
+```
+
+```{r}
+# Function để vẽ biểu đồ cột cho từng biến
+grouped_bar_chart <- function(data, variable) {
+  ggplot(data, aes(x = variable, y = Count, fill = !!rlang::sym(variable), label = Count)) +
+    geom_bar(stat = "identity", position = "dodge", width = 0.7, color = "black") +
+    geom_text(position = position_dodge(width = 0.7), vjust = -0.5, size = 3) +
+    labs(title = "", x = variable, y = "Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+}
+```
+
+
+**Biểu đồ cột theo giới tính**
+
+```{r}
+# Vẽ biểu đồ cho giới tính
+gender_data <- data.frame(Gender = c("Female", "Male"), Count = c(504, 496))
+grouped_bar_chart(gender_data, "Gender")
+```
+
+
+**Biểu đồ cột theo dân tộc / chủng tộc**
+
+```{r}
+# Vẽ biểu đồ cho dân tộc / chủng tộc
+race_data <- data.frame(
+  Race = c("Group A", "Group B", "Group C", "Group D", "Group E"),
+  Count = c(84, 180, 326, 282, 128)
+)
+grouped_bar_chart(race_data, "Race")
+
+
+```
+
+**Biểu đồ cột theo trình độ học vấn của cha mẹ**
+
+```{r}
+# Vẽ biểu đồ cho trình độ học vấn của cha mẹ
+education_data <- data.frame(
+  Education = c("Associate's Degree", "Bachelor's Degree", "High School", "Master's Degree", "Some College", "Some High School"),
+  Count = c(207, 128, 193, 62, 221, 189)
+)
+grouped_bar_chart(education_data, "Education")
+```
+
+**Biểu đồ cột theo loại bữa trưa**
+
+```{r}
+# Vẽ biểu đồ cho loại bữa trưa
+lunch_data <- data.frame(
+  Lunch = c("Free/Reduced", "Standard"),
+  Count = c(331, 669)
+)
+grouped_bar_chart(lunch_data, "Lunch")
+```
+
+**Biểu đồ cột cho việc hoàn thành khóa luyện thi**
+
+```{r}
+# Vẽ biểu đồ cho việc hoàn thành khóa luyện thi
+prep_course_data <- data.frame(
+  Preparation_Course = c("Completed", "None"),
+  Count = c(311, 689)
+)
+grouped_bar_chart(prep_course_data, "Preparation_Course")
+```
+
+**Boxplot**
+
+```{r}
+# Improved boxplot for academic performance
+boxplot(data[,c(6:8)], col = c("lightblue", "lightgreen", "lightpink"), border = "black")
+```
+
+**Ngoại lai và cực ngoại lai**
+
+```{r}
+outliers <- function(x, i){ # 3 la cuc ngoai lai, 1.5 la ngoai lai
+  # 1st and 3rd quantiles
+  q75 = quantile(x, 0.75)
+  q25 = quantile(x, 0.25)
+  IQR = q75-q25
+  # lower bound
+  lower_bound = q25 - i * IQR
+  # upper bound
+  upper_bound = q75 + i * IQR
+  # outliers
+  outlier_ind <- which(x < lower_bound | x > upper_bound)
+  if (length(outlier_ind) == 0){
+    return (0)
+  }
+  return(outlier_ind)
+}
+for (i in 6:8) {
+  cat("Cực ngoại lai -", names(data)[i], ": ", outliers(data[, i], 3), "\n")
+  cat("Ngoại lai -", names(data)[i], ": ", outliers(data[, i], 1.5), "\n")
+}
+```
+
+**Hàm định nghĩa biến đổi box-cox**
+
+```{r}
+boxcox_trans <- function(x, lambda){
+  if (any(x < 0)) stop("x must be positive!")
+  if (lambda == 0) return(log(x))
+  else return((x^lambda - 1)/lambda)
+}
+```
+
+
+**Định nghĩa hàm profile log-likelihood**
+
+```{r}
+llog_lambda <- function(lambda, x1, x2){ # x chua bien doi box-cox
+  n1 <- length(x1)
+  n2 <- length(x2)
+  x1_lambda <- boxcox_trans(x = x1, lambda = lambda)
+  x2_lambda <- boxcox_trans(x = x2, lambda = lambda)
+  mu_x1_lambda <- mean(x1_lambda)
+  mu_x2_lambda <- mean(x2_lambda)
+  ll <- -0.5 * n1 *log(sum((x1_lambda - mu_x1_lambda)^2)/n1) - 0.5 * n2 *log(sum((x2_lambda - mu_x2_lambda)^2)/n2) + 
+    (lambda - 1)*(sum(log(x1)) + sum(log(x2)))
+  return(ll)
+}
+```
+
+
+**Ước lượng lambda bằng hàm optim()**
+
+```{r}
+out_lambda_math <- function(x1, x2) {
+  optim(par = 1, fn = llog_lambda, method = "BFGS",
+        control = list(fnscale = -1), x1 = x1, x2 = x2)
+}
+```
+
+
+**Overlap Cofficient**
+
+```{r}
+povl <- function(x1, x2) {
+  mu1 <- mean(x1)
+  sigma1 <- sd(x1)
+  mu2 <- mean(x2)
+  sigma2 <- sd(x2)
+  x1 <- x1
+  x2 <- x2
+  y1 <- dnorm(x1, mean = mu1, sd = sigma1) # dist1
+  y2 <- dnorm(x2, mean = mu2, sd = sigma2) # dist2
+  
+  # Create a function that returns the minimum density of two normal distributions for a given x value
+  overlap_coef <- function(x) {
+    pmin(dnorm(x, mu1, sigma1), dnorm(x, mu2, sigma2))
+  }
+  # Calculate the overlap coefficient between the two distributions
+  oc <- integrate(overlap_coef, lower = -Inf, upper = Inf)$value
+  cat("Overlap Coefficient: ", oc, "\n")
+  # Create a data frame for the normal distributions and the overlap area
+  df <- data.frame(x = c(x1, x2),
+                   y = c(y1, y2),
+                   group = factor(c(rep("Group 1", length(y1)), rep("Group 2", length(y2))),
+                                  levels = c("Group 1", "Group 2")))
+  df_overlap <- df %>% 
+    arrange(x) %>% #sap xep data.frame
+    mutate(overlap = overlap_coef(x)) #tao them cot overlap_coef cho data.frame
+  # Create the plot
+  ggplot(df) +
+    geom_area(data = df_overlap,
+              aes(x = x, y = overlap, fill = "Overlap Area"), 
+              alpha = 0.2, position = "identity") +
+    geom_line(size = 1, aes(x = x, y = y, color = group)) +
+    scale_color_manual(values = c("blue", "red"), 
+                       name = "Group") +
+    scale_fill_manual(values = "green", 
+                      name = "", 
+                      guide = guide_legend(override.aes = list(fill = "green", alpha = 0.2))) +
+    theme_classic() +
+    labs(title = "Overlap Coefficient of Two Normal Distributions",
+         x = "X", y = "Probability Density", 
+         fill = paste0("Overlap Coefficient: ", round(oc, 2))) 
+}
+```
+
+```{r}
+ovl_normal <- function(par){
+  mu1 <- par[1]
+  mu2 <- par[2]
+  sigma1 <- par[3]
+  sigma2 <- par[4]
+  a <- (sigma1^2 - sigma2^2)
+  b <- (mu1*sigma2^2 - mu2*sigma1^2)
+  c <- sigma1*sigma2
+  d <- (mu1 - mu2)^2
+  e <- log(sigma1^2/sigma2^2)
+  x1 = (b - c*sqrt(d + a * e)) / -a
+  x2 = (b + c*sqrt(d + a * e)) / -a
+  ovl <- 1 + pnorm(x1, mu1, sigma1) - pnorm(x1, mu2, sigma2) - pnorm(x2, mu1, sigma1) + pnorm(x2, mu2, sigma2)
+  return (ovl)
+}
+```
+
+```{r}
+IC <- function(x, y) {
+  mu1 <- mean(x)
+  mu2 <- mean(y)
+  sigma1 <- sd(x)
+  sigma2 <- sd(y)
+  par_s <- c(mu1, mu2, sigma1, sigma2)
+  z <- jacobian(ovl_normal, par_s)
+  varmu1 <- sigma1^2/length(x)
+  varmu2 <- sigma2^2/length(y)
+  varsigma1 <- 2 *sigma1^2 / length(x)
+  varsigma2 <- 2 *sigma2^2 / length(y)
+  var_OVL_s <- z[1] ^ 2 * varmu1 + z[2] ^2 * varmu2 + z[3]^2 * varsigma1 + z[4]^2 * varsigma2
+  alpha <- 0.05
+  z_normal <- qnorm(1 - alpha / 2)
+  upper <- ovl_normal(par_s) + z_normal* sqrt(var_OVL_s)
+  lower <- ovl_normal(par_s) - z_normal* sqrt(var_OVL_s)
+  cat("Confidence interval for overlap coefficient: [", round(lower, 7), ",", round(upper, 7), "]\n")
+}
+```
+
+```{r}
+OVL <- function(x, y) {
+  lambda1 <- out_lambda_math(x, y)$par
+  bcmath1 <- boxcox_trans(x, lambda1)
+  bcmath2 <- boxcox_trans(y, lambda1)
+  
+  # Shapiro-Wilk test
+  shapiro_result1 <- shapiro.test(bcmath1)
+  shapiro_result2 <- shapiro.test(bcmath2)
+  print(shapiro_result1)
+  print(shapiro_result2)
+  
+  # Anderson-Darling test
+  ad_result1 <- ad.test(bcmath1)
+  ad_result2 <- ad.test(bcmath2)
+  print(ad_result1)
+  print(ad_result2)
+  
+  # QQ Plots
+  print(ggqqplot(bcmath1))
+  print(ggqqplot(bcmath2))
+  
+  # Overlap Coefficient
+  povl_result <- povl(bcmath1, bcmath2)
+  
+  # Confidence Interval
+  IC_result <- IC(bcmath1, bcmath2)
+
+  #t-test
+  tt <- t.test(bcmath1, bcmath2)
+  print(tt)
+  # In giá trị p-value
+  p <- tt$p.value
+  print(p)
+
+  # Overlap Function
+  overlap_result <- overlap(bcmath1, bcmath2)
+  print(plot(overlap_result))
+  
+  # Return results
+  return(list(
+    shapiro1 = shapiro_result1,
+    shapiro2 = shapiro_result2,
+    ad1 = ad_result1,
+    ad2 = ad_result2,
+    povl = povl_result,
+    IC = IC_result,
+    tt, p,
+    overlap = overlap_result
+  ))
+}
+
+```
+
+Phân loại gender thành 2 nhóm gồm nữ (female) (487) và nam (male) (513).
+
+```{r}
+math1 <- data$Math[data$gender == "female"] 
+math2 <- data$Math[data$gender == "male"]
+OVL(math1, math2)
+```
+Dựa trên kết quả phân tích so sánh giữa nhóm nữ (female) và nam (male) trong biến điểm toán (Math), có thể rút ra một số kết luận như sau:
+
+Chênh lệch ý nghĩa về điểm toán: Nhóm nam (male) có điểm toán trung bình có vẻ cao hơn so với nhóm nữ (female), và sự chênh lệch này là ý nghĩa thống kê.
+
+Phân phối dữ liệu gần với phân phối chuẩn: Cả hai nhóm đều có phân phối dữ liệu gần với phân phối chuẩn, cho thấy tính đồng đều và đối xứng của dữ liệu.
+
+Sự tương đồng giữa hai nhóm: Mức độ trùng khớp cao (khoảng 91%) thể hiện rằng có sự tương đồng lớn giữa hai nhóm về khả năng học thuật trong môn toán.
+
+Kết quả hợp lý và tin cậy: Khoảng tin cậy cho hệ số trùng khớp rất cao, từ 85.7% đến 96.1%, làm tăng tính hợp lý và tin cậy của kết quả.
+
+Tổng thể, kết luận là nhóm nam và nhóm nữ có sự chênh lệch ý nghĩa về điểm toán, với nhóm nam có xu hướng đạt điểm cao hơn. Tuy nhiên, sự tương đồng lớn giữa hai nhóm, đặc biệt là thông qua mức độ trùng khớp cao và khoảng tin cậy lớn, cho thấy không nên đánh giá khả năng học thuật chỉ dựa trên giới tính
+
+
+
+Phân loại parental.level.of.education thành 2 nhóm gồm cha mẹ có học thức cao (associate's degree, bachelor's degree, high school, master's degree) (594) và cha mẹ chưa có học thức thấp (some college, some high school)(406).
+
+```{r}
+math3 <- data$Math[data$parental.level.of.education == "associate's degree" 
+                   | data$parental.level.of.education == "bachelor's degree"
+                   | data$parental.level.of.education == "master's degree"
+                   | data$parental.level.of.education == "high school"]
+math4 <- data$Math[data$parental.level.of.education == "some college" 
+                   | data$parental.level.of.education == "some high school" ]
+OVL(math3, math4)
+
+```
+Dựa trên phân tích so sánh giữa nhóm cha mẹ có trình độ học vấn cao (associate’s degree, bachelor’s degree, high school, master’s degree) và cha mẹ chưa có trình độ học vấn thấp (some college, some high school) trong biến điểm toán (Math), có thể rút ra các kết luận sau:
+
+Chênh lệch ý nghĩa về điểm toán: Nhóm cha mẹ có trình độ học vấn cao có điểm toán trung bình cao hơn so với nhóm cha mẹ chưa có trình độ học vấn thấp, và sự chênh lệch này đạt đến mức ý nghĩa thống kê. Điều này có thể cho thấy ảnh hưởng tích cực của môi trường học vấn gia đình đối với kết quả học thuật của học sinh.
+
+Độ tương đồng giữa hai nhóm: Mức độ trùng khớp (overlap) giữa hai nhóm là khá cao, khoảng 93.9%, cho thấy rằng có sự tương đồng lớn về khả năng học thuật giữa hai nhóm cha mẹ. Sự trùng khớp này đề xuất rằng môi trường gia đình có thể không phải là yếu tố duy nhất ảnh hưởng đến kết quả học thuật.
+
+Phân phối dữ liệu gần với chuẩn: Cả hai nhóm đều có phân phối dữ liệu gần với phân phối chuẩn, đề xuất rằng dữ liệu được phân phối đồng đều và đối xứng giữa hai nhóm cha mẹ.
+
+Kết quả hợp lý và tin cậy: Khoảng tin cậy cho hệ số trùng khớp là rất cao, từ 88.1% đến 99.7%, làm tăng tính hợp lý và tin cậy của kết quả. Điều này cho thấy rằng mức độ trùng khớp được ước lượng một cách đáng tin cậy.
+
+Tổng thể, kết luận là có sự chênh lệch về điểm toán giữa hai nhóm cha mẹ, nhưng mức độ trùng khớp cao và khoảng tin cậy lớn đều đặc trưng cho sự đa dạng và tương đồng lớn về khả năng học thuật giữa hai nhóm cha mẹ. Điều này chỉ ra rằng việc đánh giá ảnh hưởng của môi trường gia đình có thể cần phải xem xét nhiều yếu tố khác.
+
+
+
+Phân loại lunch thành 2 nhóm gồm miễn phí/giảm tiêu (352) và chuẩn (648).
+
+```{r}
+math5 <- data$Math[data$lunch == "free/reduced"]
+math6 <- data$Math[data$lunch == "standard"]
+OVL(math5, math6)
+```
+
+Đối với so sánh giữa nhóm miễn phí/giảm tiêu và nhóm chuẩn trong biến điểm toán (Math):
+
+Chênh lệch ý nghĩa về điểm toán: Nhóm chuẩn có điểm toán trung bình cao hơn so với nhóm miễn phí/giảm tiêu, và sự chênh lệch này đạt đến mức ý nghĩa thống kê. Điều này có thể phản ánh ảnh hưởng của chế độ dinh dưỡng và môi trường học tập tại trường lên kết quả học thuật.
+
+Độ tương đồng giữa hai nhóm: Mức độ trùng khớp giữa hai nhóm là khá cao, khoảng 66.3%, cho thấy sự tương đồng về khả năng học thuật giữa nhóm miễn phí/giảm tiêu và nhóm chuẩn. Tuy nhiên, sự chênh lệch còn thể hiện một số yếu tố ảnh hưởng từ điều kiện kinh tế và xã hội.
+
+Phân phối dữ liệu gần với chuẩn: Cả hai nhóm đều có phân phối dữ liệu gần với phân phối chuẩn, đề xuất rằng dữ liệu được phân phối đồng đều và đối xứng giữa nhóm miễn phí/giảm tiêu và nhóm chuẩn.
+
+Kết quả hợp lý và tin cậy: Khoảng tin cậy cho hệ số trùng khớp là khá cao, từ 60.6% đến 71.9%, làm tăng tính hợp lý và tin cậy của kết quả. Điều này cho thấy rằng mức độ trùng khớp được ước lượng một cách đáng tin cậy.
+
+Tổng thể, kết luận là có sự chênh lệch về điểm toán giữa nhóm miễn phí/giảm tiêu và nhóm chuẩn, nhưng mức độ trùng khớp cao và khoảng tin cậy lớn đều đặc trưng cho sự đa dạng và tương đồng lớn về khả năng học thuật giữa hai nhóm. Điều này chỉ ra rằng việc đánh giá ảnh hưởng của điều kiện kinh tế và xã hội cũng cần phải xem xét nhiều yếu tố khác.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
